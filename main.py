@@ -26,6 +26,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Load .env file if it exists
+if os.path.exists(".env"):
+    with open(".env", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
+
 IST = timezone(timedelta(hours=5, minutes=30))
 SUMMARY_SENTENCES = int(os.environ.get("SUMMARY_SENTENCES", "3"))
 MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "60"))

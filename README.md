@@ -36,7 +36,21 @@ just adjust the host/port below.
 
 ### 3. Add GitHub Secrets
 In your repo: **Settings → Secrets and variables → Actions → New repository secret**.
-Add these:
+
+You can set up your configuration in one of two ways:
+
+#### Option A: Single Combined Secret (Easiest)
+Create a single repository secret named **`PIB_ENV`** and paste the entire block of configuration variables into the **Value** field:
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=abhinaykumar5432@gmail.com
+SMTP_PASS=your_16_char_app_password
+EMAIL_FROM=abhinaykumar5432@gmail.com
+```
+
+#### Option B: Individual Secrets
+Alternatively, you can add these secrets one-by-one:
 
 | Secret name   | Example value              |
 |---------------|-----------------------------|
