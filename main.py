@@ -36,8 +36,13 @@ if os.path.exists(".env"):
                 os.environ[key.strip()] = val.strip()
 
 IST = timezone(timedelta(hours=5, minutes=30))
-SUMMARY_SENTENCES = int(os.environ.get("SUMMARY_SENTENCES", "3"))
-MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "60"))
+SUMMARY_SENTENCES_STR = os.environ.get("SUMMARY_SENTENCES", "").strip()
+SUMMARY_SENTENCES = int(SUMMARY_SENTENCES_STR) if SUMMARY_SENTENCES_STR else 3
+
+MAX_ITEMS_STR = os.environ.get("MAX_ITEMS", "").strip()
+MAX_ITEMS = int(MAX_ITEMS_STR) if MAX_ITEMS_STR else 60
+
+
 
 
 def build_html(releases, date_str):
