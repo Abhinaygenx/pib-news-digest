@@ -27,23 +27,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run digest script
+      - name: Write .env from PIB_ENV secret
+        # PIB_ENV should contain all config lines, e.g.:
+        #   SMTP_HOST=smtp.gmail.com
+        #   SMTP_PORT=587
+        #   SMTP_USER=you@gmail.com
+        #   SMTP_PASS=xxxxxxxxxxxxxxxx
+        #   EMAIL_FROM=you@gmail.com
+        #   EMAIL_TO=you@gmail.com
         run: |
           if [ -n "$PIB_ENV" ]; then
-            echo "$PIB_ENV" > .env
+            printf '%s\n' "$PIB_ENV" > .env
+            echo "[setup] .env written ($(wc -l < .env) lines)"
+            echo "[setup] Keys found in .env: $(grep -oP '^[A-Z_]+(?==)' .env | tr '\n' ' ')"
+          else
+            echo "[setup] WARNING: PIB_ENV secret is not set. Email will fail."
           fi
-          
+        env:
+          PIB_ENV: ${{ secrets.PIB_ENV }}
+
+      - name: Run digest script
+        run: |
           ARGS=""
           if [ "${{ github.event.inputs.include_all_dates }}" = "true" ]; then
             ARGS="--include-all-dates"
           fi
-          
           python main.py $ARGS
         env:
-          PIB_ENV: ${{ secrets.PIB_ENV }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO || 'abhinaykumar5432@gmail.com' }}

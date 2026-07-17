@@ -26,20 +26,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load .env file if it exists.
-# Only set a variable from .env if it is NOT already set to a non-empty value
-# in the environment — this lets the .env written from PIB_ENV take precedence
-# over the empty strings injected by GitHub Actions for unconfigured secrets.
+# Load .env file if it exists (written from PIB_ENV secret by the workflow).
 if os.path.exists(".env"):
     with open(".env", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip()
-                if not os.environ.get(key):  # only set if currently absent/empty
-                    os.environ[key] = val
+                os.environ[key.strip()] = val.strip()
+
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SUMMARY_SENTENCES_STR = os.environ.get("SUMMARY_SENTENCES", "").strip()
