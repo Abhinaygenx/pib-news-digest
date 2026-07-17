@@ -1,18 +1,23 @@
 """
 scraper.py — Fetches today's press releases from pib.gov.in
 
-PIB's site is an ASP.NET WebForms app. Its RSS feed blocks non-browser
-requests (returns an empty <channel>), so instead we scrape the public
-"All Releases" listing page, which lists the day's releases grouped by
-ministry, and then fetch each release's detail page for the full text.
+PIB's site is an ASP.NET WebForms app. We use two strategies to get release links:
 
-Two things make this reasonably robust without depending on exact CSS
-classes (which PIB changes periodically):
-  - Titles are pulled from the <meta property="og:title"> tag, which is
-    stable across redesigns.
-  - Article body text is extracted by finding the line containing
-    "Posted On:" (start marker) and "(Release ID:" (end marker), since
-    every PIB release follows this exact template.
+Primary: Scrape the "All Releases" listing page (allRel.aspx), which lists the
+  day's releases grouped by ministry.
+
+Fallback: Use the PIB press-release search page (allrelNew.aspx) which lists
+  releases with English titles directly, as a fallback if the primary page
+  returns 0 links (common when running from CI/cloud IPs that PIB's server
+  treats with less trust).
+
+In both cases, each release's detail page is then fetched for the full body.
+Article body text is extracted by finding the line containing "Posted On:"
+(start marker) and "(Release ID:" (end marker), since every PIB release
+follows this exact template.
+
+Session warming: We always visit the PIB homepage first to establish a session
+cookie, which greatly improves the reliability of subsequent scraping requests.
 """
 
 import re
@@ -27,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 BASE = "https://www.pib.gov.in"
 LISTING_URL = f"{BASE}/allRel.aspx"
+FALLBACK_LISTING_URL = f"{BASE}/allrelNew.aspx"
 DETAIL_URL = f"{BASE}/PressReleasePage.aspx"
 
 # A realistic browser User-Agent avoids some basic bot-blocking.
@@ -36,6 +42,9 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-IN,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -46,25 +55,23 @@ def _today_ist_str():
     return datetime.now(IST).strftime("%d %b %Y").upper()
 
 
-def get_release_links(lang=1, reg=3, session=None, max_items=60):
-    """
-    Fetch the 'All Releases' listing page and return a de-duplicated list
-    of {"prid": ..., "url": ...} dicts for every press release linked on it.
+def _warm_session(session):
+    """Visit the PIB homepage to establish a session cookie before scraping."""
+    try:
+        session.get(f"{BASE}/", headers=HEADERS, timeout=20)
+        time.sleep(0.5)
+    except Exception as e:
+        logger.warning("Session warm-up failed (non-fatal): %s", e)
 
-    lang=1 -> English, reg=3 -> National (PIB Delhi) region.
-    """
-    session = session or requests.Session()
-    params = {"lang": lang, "reg": reg}
-    resp = session.get(LISTING_URL, headers=HEADERS, params=params, timeout=25)
-    resp.raise_for_status()
 
-    soup = BeautifulSoup(resp.text, "lxml")
+def _extract_prid_links(soup, lang=1, reg=3, max_items=60):
+    """Extract PRID links from a BeautifulSoup-parsed page."""
     seen = set()
     links = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        m = re.search(r"PRID=(\d+)", href)
-        if not m or "PressReleasePage" not in href:
+        m = re.search(r"PRID=(\d+)", href, re.IGNORECASE)
+        if not m:
             continue
         prid = m.group(1)
         if prid in seen:
@@ -76,20 +83,89 @@ def get_release_links(lang=1, reg=3, session=None, max_items=60):
         })
         if len(links) >= max_items:
             break
-
-    logger.info("Found %d release links on listing page", len(links))
     return links
 
 
-def get_release_detail(url, session=None):
+def get_release_links(lang=1, reg=3, session=None, max_items=60):
+    """
+    Fetch the 'All Releases' listing page and return a de-duplicated list
+    of {"prid": ..., "url": ...} dicts for every press release linked on it.
+
+    Falls back to an alternate listing page if the primary page returns 0 results.
+    lang=1 -> English, reg=3 -> National (PIB Delhi) region.
+    """
+    session = session or requests.Session()
+    params = {"lang": lang, "reg": reg}
+
+    # --- Primary listing page ---
+    try:
+        resp = session.get(LISTING_URL, headers=HEADERS, params=params, timeout=25)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        links = _extract_prid_links(soup, lang=lang, reg=reg, max_items=max_items)
+        logger.info("Primary listing: found %d release links", len(links))
+        if links:
+            return links
+    except Exception as e:
+        logger.warning("Primary listing page failed: %s", e)
+
+    # --- Fallback listing page ---
+    logger.info("Trying fallback listing page: %s", FALLBACK_LISTING_URL)
+    try:
+        resp2 = session.get(FALLBACK_LISTING_URL, headers=HEADERS, params=params, timeout=25)
+        resp2.raise_for_status()
+        soup2 = BeautifulSoup(resp2.text, "lxml")
+        links2 = _extract_prid_links(soup2, lang=lang, reg=reg, max_items=max_items)
+        logger.info("Fallback listing: found %d release links", len(links2))
+        if links2:
+            return links2
+    except Exception as e:
+        logger.warning("Fallback listing page also failed: %s", e)
+
+    # --- Second fallback: search page with today's date ---
+    from datetime import datetime
+    today = datetime.now(IST)
+    date_param = today.strftime("%d/%m/%Y")
+    search_url = f"{BASE}/allrel.aspx"
+    search_params = {"lang": lang, "reg": reg, "fromdate": date_param, "todate": date_param}
+    logger.info("Trying date-filtered search fallback for %s", date_param)
+    try:
+        resp3 = session.get(search_url, headers=HEADERS, params=search_params, timeout=25)
+        resp3.raise_for_status()
+        soup3 = BeautifulSoup(resp3.text, "lxml")
+        links3 = _extract_prid_links(soup3, lang=lang, reg=reg, max_items=max_items)
+        logger.info("Date-filtered search: found %d release links", len(links3))
+        return links3
+    except Exception as e:
+        logger.warning("Date-filtered search also failed: %s", e)
+
+    return []
+
+
+def get_release_detail(url, session=None, retries=2):
     """
     Fetch a single press release page and return
     {"title": str, "body": str, "posted_on": str|None, "url": url}
     or None if the page couldn't be parsed.
+
+    Retries up to `retries` times on transient network errors.
     """
     session = session or requests.Session()
-    resp = session.get(url, headers=HEADERS, timeout=25)
-    resp.raise_for_status()
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=25)
+            resp.raise_for_status()
+            break
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < retries:
+                wait = 2 ** attempt
+                logger.warning("Attempt %d failed for %s: %s — retrying in %ds", attempt + 1, url, e, wait)
+                time.sleep(wait)
+    else:
+        raise last_exc
+
     soup = BeautifulSoup(resp.text, "lxml")
 
     # Title: prefer og:title meta tag (stable), fall back to <h2>.
@@ -141,10 +217,15 @@ def get_release_detail(url, session=None):
 
 def fetch_todays_releases(lang=1, reg=3, delay=1.0, only_today=True, max_items=60):
     """
-    Full pipeline: get today's listing, fetch each detail page, filter to
-    today's date (IST) if only_today=True, and return a list of release dicts.
+    Full pipeline: warm session, get today's listing, fetch each detail page,
+    filter to today's date (IST) if only_today=True, and return a list of
+    release dicts.
     """
     session = requests.Session()
+
+    # Warm the session with a homepage visit before scraping
+    _warm_session(session)
+
     links = get_release_links(lang=lang, reg=reg, session=session, max_items=max_items)
     today_str = _today_ist_str()
 

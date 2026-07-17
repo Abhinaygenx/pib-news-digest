@@ -26,14 +26,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load .env file if it exists
+# Load .env file if it exists.
+# Only set a variable from .env if it is NOT already set to a non-empty value
+# in the environment — this lets the .env written from PIB_ENV take precedence
+# over the empty strings injected by GitHub Actions for unconfigured secrets.
 if os.path.exists(".env"):
     with open(".env", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+                key = key.strip()
+                val = val.strip()
+                if not os.environ.get(key):  # only set if currently absent/empty
+                    os.environ[key] = val
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SUMMARY_SENTENCES_STR = os.environ.get("SUMMARY_SENTENCES", "").strip()
@@ -130,7 +136,8 @@ def main():
     plain_body = build_plain(releases, date_str)
 
     if args.dry_run:
-        print(plain_body)
+        sys.stdout.buffer.write(plain_body.encode("utf-8", errors="replace"))
+        sys.stdout.buffer.write(b"\n")
         return
 
     subject = f"PIB News Digest — {date_str} ({len(releases)} releases)"
